@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<title></title>
+		<script src="http://code.createjs.com/easeljs-0.5.0.min.js"></script>
+		<script src="http://code.createjs.com/tweenjs-0.3.0.min.js"></script>
+		<script src="http://code.createjs.com/soundjs-0.3.0.min.js"></script>
+		<script src="http://code.createjs.com/preloadjs-0.2.0.min.js"></script>
+		<script src="http://ajax.cdnjs.com/ajax/libs/json2/20110223/json2.js"></script>
+		<script src="http://ajax.googleapis.com/ajax/libs/jquery/1.8.2/jquery.min.js"></script>
+		<script src="http://ajax.aspnetcdn.com/ajax/knockout/knockout-2.1.0.js"></script>
+		
+		<script src="game-classes.js"></script>
+		
+		<style type="text/css">
+		body { font-family :courier; }
+			nav, #helpers { background-color:#ccc }
+			#helpers { float:left; width:300px}
+			.selected { border: solid 3px #f00 }
+		</style>
+	</head>
+	<body>
+		<nav>
+			<button id="all" class="selected">All Regions</button>
+			<button id="blocked">Non-Walkable Regions</button>
+			<button id="threed">3d Elements</button>
+			<button id="flammable">Flammable Areas</button>
+			<button id="entities-start">Entity - Player Start</button>
+			<button id="entities-enemy">Entity - Enemy</button>
+			<button id="entities-rescue">Entity - Rescue</button>
+            <button id="entities-assassinate">Entity - Assassinate</button>
+			<button id="entities-extraction">Entity - Extraction</button>
+		</nav>
+		<div id="status"></div>
+		<section id="helpers">
+			Raw Mouse X:<span id="rawmousex"></span> Y: <span id="rawmousey"></span><br/>
+			Mouse X:<span id="mousex"></span> Y: <span id="mousey"></span><br/>
+			Non Walkable Regions
+			<ul id="list-blocked" data-bind="foreach: LevelDefinition()[0]">
+				<li data-bind="click: $parent.SelectRegion.bind($data, $index, 0)">Region <span data-bind="text:$index"></span> (uid:<span data-bind="text: $data[0]"></span>) <button data-bind="click: $parent.RemoveRegion.bind($data, $index, 0)"> X </button></li>
+			</ul>
+			3D Elements
+			<ul id="list-threed" data-bind="foreach: LevelDefinition()[1]">
+				<li data-bind="click: $parent.SelectRegion.bind($data, $index, 1)">Region <span data-bind="text:$index"></span> (uid:<span data-bind="text: $data[0]"></span>) <button data-bind="click: $parent.RemoveRegion.bind($data, $index, 1)"> X </button></li>
+			</ul>
+			Flamable Regions
+			<ul id="list-flammable" data-bind="foreach: LevelDefinition()[2]">
+				<li data-bind="click: $parent.SelectRegion.bind($data, $index, 2)">Region <span data-bind="text:$index"></span> (uid:<span data-bind="text: $data[0]"></span>) <button data-bind="click: $parent.RemoveRegion.bind($data, $index, 2)"> X </button></li>
+			</ul>
+			Entities
+			<ul id="list-entities" data-bind="foreach: LevelDefinition()[3]">
+				<li data-bind="click: $parent.SelectRegion.bind($data, $index, 3)">Entity <span data-bind="text:$index"></span> (uid:<span data-bind="text: $data[0]"></span>) <button data-bind="click: $parent.RemoveRegion.bind($data, $index, 3)"> X </button></li>
+			</ul>
+			JSON<br />
+			<textarea id="json"></textarea>
+			<button id="load-json">Load</button> <button id="save-json">Save</button>
+		</section>
+		
+		<canvas id="theCanvas" width="640" height="480" />
+		
+				<script>
+				
+var Editor = function() {
+	
+	document.oncontextmenu = function(){ return false; }// disable context menu
+	
+	var self = this;
+	
+	var canvas = document.getElementById('theCanvas');
+	this.Stage = new createjs.Stage(canvas);
+	
+	this.StageDimensions = [canvas.width, canvas.height];
+	
+	this.LevelContainer = new createjs.Container();
+	this.Stage.addChild(this.LevelContainer);
+	
+	this.MapDimensions = [0,0];
+	
+	this.LevelBase = undefined;
+	
+	this.EntityType = CONST.EntityType.PlayerStart;
+	
+	this.ViewOffset = [0,0];
+	
+	this.RegionBuilder = undefined;
+	this.SelectedArea = {type: undefined, index: undefined};
+	
+	this.Mode = CONST.AreaType.All;
+	
+	this.EdgeTolence = 10;
+	
+	this.LevelDefinition = ko.observableArray([]);
+	this.LevelDefinition()[0] = ko.observableArray([]);
+	this.LevelDefinition()[1] = ko.observableArray([]);
+	this.LevelDefinition()[2] = ko.observableArray([]);
+	this.LevelDefinition()[3] = ko.observableArray([]);
+	
+	this.LevelDefinition()[0].subscribe(function() { self.DebugRegionRenderer.RefreshOnScreenRegions(this.Mode);	});
+	this.LevelDefinition()[1].subscribe(function() { self.DebugRegionRenderer.RefreshOnScreenRegions(this.Mode);	});
+	this.LevelDefinition()[2].subscribe(function() { self.DebugRegionRenderer.RefreshOnScreenRegions(this.Mode);	});
+	this.LevelDefinition()[3].subscribe(function() { self.DebugRegionRenderer.RefreshOnScreenRegions(this.Mode);	});
+	
+	this.LevelViewModel = {
+		LevelDefinition: this.LevelDefinition,
+		SelectRegion: function(index, type, item) {
+			self.SelectRegion(type,index());
+			self.DebugRegionRenderer.RefreshOnScreenRegions(self.Mode);
+		},
+		RemoveRegion: function(index, type, item) {
+			self.LevelDefinition()[type].splice(index(), 1);
+		}
+	};
+	
+	DebugRegionRenderer.prototype.RefreshOnScreenRegions= function(draw_mode) {			
+		for(var i = this.OnScreenRegionGraphics.length; i--; ) {
+			this.GraphicsContainer.removeChild(this.OnScreenRegionGraphics[i]);
+		}
+		
+		this.OnScreenRegionGraphics.length = 0;
+		
+		for (var e_type = this.LevelDefinition().length; e_type-- ; )
+		{
+			if (draw_mode == CONST.AreaType.All || draw_mode == e_type)
+			{
+				for(var j = this.LevelDefinition()[e_type]().length; j--; ) {
+					if (e_type == CONST.AreaType.Entities)
+					{
+						this.DrawEntity(this.LevelDefinition()[e_type]()[j]);
+					}
+					else 
+					{
+						var highlight = (e_type == this.HighlightedArea.type && j == this.HighlightedArea.index);
+						this.DrawRegion(this.LevelDefinition()[e_type]()[j], e_type, highlight);
+					}
+				}
+			}			
+		}
+		
+		this.Stage.update();
+	};
+	
+	
+	this.DebugRegionRenderer = new DebugRegionRenderer(this.LevelDefinition, this.LevelContainer, this.Stage);
+	
+	ko.applyBindings(this.LevelViewModel, $("#helpers")[0]);
+	
+	this.assets = [];
+	
+	this.Init();
+	
+	this.Stage.onMouseDown = function(event) {
+	
+		var coords = self.GetProcessedMouse();//self.Stage.localToLocal(this.Stage.mouseX,this.Stage.mouseY, this.LevelContainer);
+		
+		// start a new shape
+		switch(event.nativeEvent.button) 
+		{
+			case 0:
+				switch(self.Mode) {
+					case CONST.AreaType.All:
+						self.SetHelpPrompt("Select an area type before trying to define a new region!", true);
+						break;
+					case CONST.AreaType.Blocked:
+					case CONST.AreaType.ThreeD:
+					case CONST.AreaType.Flammable:
+						if (self.RegionBuilder == undefined)
+						{
+							self.RegionBuilder = new RegionBuilder(self.LevelContainer, self.Stage, coords);
+							self.SetHelpPrompt("Defining new area- left click to add a point, right click to close and finish the shape.");
+						}
+						else 
+						{
+							self.RegionBuilder.AddPoint(coords);
+						}
+						break;
+					case CONST.AreaType.Entities:
+						switch(self.EntityType) {
+							case CONST.EntityType.PlayerStart:
+								// remove any other player strat points first..
+								var found = undefined;
+								for(var i = self.LevelDefinition()[CONST.AreaType.Entities]().length; i--; )
+								{
+									if (self.LevelDefinition()[CONST.AreaType.Entities]()[i].type == CONST.EntityType.PlayerStart)
+									{
+										found = self.LevelDefinition()[CONST.AreaType.Entities]()[i];
+										break;
+									}
+								}
+								
+								if (found != undefined)
+									ko.utils.arrayRemoveItem(self.LevelDefinition()[CONST.AreaType.Entities](), found);
+									
+								self.LevelDefinition()[CONST.AreaType.Entities].push({
+									type: CONST.EntityType.PlayerStart, 
+									position : [coords.x, coords.y],
+									facing: "S"
+								});
+								break;
+							case CONST.EntityType.Extraction:
+								// remove any other player strat points first..
+								var found = undefined;
+								for(var i = self.LevelDefinition()[CONST.AreaType.Entities]().length; i--; )
+								{
+									if (self.LevelDefinition()[CONST.AreaType.Entities]()[i].type == CONST.EntityType.Extraction)
+									{
+										found = self.LevelDefinition()[CONST.AreaType.Entities]()[i];
+										break;
+									}
+								}
+								
+								if (found != undefined)
+									ko.utils.arrayRemoveItem(self.LevelDefinition()[CONST.AreaType.Entities](), found);
+									
+								self.LevelDefinition()[CONST.AreaType.Entities].push({
+									type: CONST.EntityType.Extraction, 
+									position : [coords.x, coords.y],
+									facing: "S"
+								});
+								break;
+							case CONST.EntityType.Enemy:
+								self.LevelDefinition()[CONST.AreaType.Entities].push({
+									type: CONST.EntityType.Enemy, 
+									position : [coords.x, coords.y],
+									facing: "S"
+								});
+								break;
+							case CONST.EntityType.Rescue:
+								self.LevelDefinition()[CONST.AreaType.Entities].push({
+									type: CONST.EntityType.Rescue, 
+									position : [coords.x, coords.y],
+									facing: "S"
+								});
+								break;
+                            case CONST.EntityType.Assassinate:
+								self.LevelDefinition()[CONST.AreaType.Entities].push({
+									type: CONST.EntityType.Assassinate, 
+									position : [coords.x, coords.y],
+									facing: "S"
+								});
+								break;
+
+						}
+						break;
+				}
+				break;
+			case 2:
+				if (self.RegionBuilder !== undefined)
+				{
+					var finished_region = self.RegionBuilder.FinishRegion();
+					// finish the shape!
+					
+					self.LevelDefinition()[self.Mode].push(finished_region);
+
+					self.RegionBuilder = undefined;
+					self.SetHelpPrompt("");
+				}
+				break;
+		}
+	};
+    //this.Stage.onMouseUp = function(event) {};
+	
+	$('#all').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.All); });
+	$('#blocked').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.Blocked); });
+	$('#threed').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.ThreeD); });
+	$('#flammable').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.Flammable); });
+	$('#entities-start').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.Entities); self.SetEntity(CONST.EntityType.PlayerStart); });
+	$('#entities-enemy').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.Entities); self.SetEntity(CONST.EntityType.Enemy); });
+	$('#entities-rescue').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.Entities); self.SetEntity(CONST.EntityType.Rescue); });
+    $('#entities-assassinate').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.Entities); self.SetEntity(CONST.EntityType.Assassinate); });
+	$('#entities-extraction').click(function() { $("nav button").removeClass("selected"); $(this).addClass("selected"); self.SetEditorMode(CONST.AreaType.Entities); self.SetEntity(CONST.EntityType.Extraction); });
+	$('#save-json').click(function() { $("#json").val(ko.toJSON(self.LevelDefinition)); });
+	$('#load-json').click(function() { self.Load($("#json").val()); });
+};
+Editor.prototype = {
+	Init : function() {
+		var self = this;
+		
+		var level_base = this.GetParameterByName('image');
+		
+		var manifest = [
+			{src:level_base, id:'base'},
+			{src:'icon-start.png', id:'icon-start'},
+			{src:'icon-enemy.png', id:'icon-enemy'},
+			{src:'icon-exit.png', id:'icon-exit'},
+			{src:'icon-rescue.png', id:'icon-rescue'},
+            {src:'icon-assassinate.png', id:'icon-assassinate'},
+			{src:'icon-unknown.png', id:'icon-unknown'}
+		];
+		
+		var loader = new createjs.PreloadJS();
+		loader.useXHR = false;  // XHR loading is not reliable when running locally.
+		loader.onFileLoad = function(ev) {
+			self.assets.push(ev);
+		};
+		loader.onComplete = function() {
+			for (var i = 0; i < self.assets.length; i++) {
+				var item = self.assets[i]; 
+				var id = item.id;
+				var result = item.result;			
+			}
+			
+			self.LevelBase = new createjs.Bitmap(loader.getResult("base").result);
+			self.LevelContainer.addChild(self.LevelBase);	
+			
+			self.LevelContainer.addChild(new createjs.Shape(
+				new createjs.Graphics()
+					.beginFill(createjs.Graphics.getRGB(255,0,0,0.5))
+					.rect(0,0,self.LevelBase.image.width, self.EdgeTolence)
+			));
+			self.LevelContainer.addChild(new createjs.Shape(
+				new createjs.Graphics()
+					.beginFill(createjs.Graphics.getRGB(255,0,0,0.5))
+					.rect(0,self.EdgeTolence,self.EdgeTolence, self.LevelBase.image.height - (self.EdgeTolence * 2))
+			));
+			self.LevelContainer.addChild(new createjs.Shape(
+				new createjs.Graphics()
+					.beginFill(createjs.Graphics.getRGB(255,0,0,0.5))
+					.rect(self.LevelBase.image.width - self.EdgeTolence,self.EdgeTolence,self.EdgeTolence, self.LevelBase.image.height - (self.EdgeTolence * 2))
+			));
+			self.LevelContainer.addChild(new createjs.Shape(
+				new createjs.Graphics()
+					.beginFill(createjs.Graphics.getRGB(255,0,0,0.5))
+					.rect(0,self.LevelBase.image.height - self.EdgeTolence,self.LevelBase.image.width, self.EdgeTolence)
+			));
+			
+			self.MapDimensions = [self.LevelBase.image.width, self.LevelBase.image.height];
+			
+			self.ScrollManager = new ScrollManager(self.LevelContainer, self.Stage, self.StageDimensions, self.MapDimensions);
+			
+			self.StartLevel();
+		};
+		loader.onProgress = function() {
+			// erm.... do something..
+		}
+		loader.loadManifest(manifest);
+		self.SetHelpPrompt("");
+	},
+	Load: function(data) {
+		var level = JSON.parse(data);
+		
+		for( var i = 0; i < level.length; i++) 
+		{		
+			for( var j = 0; j < level[i].length; j++)
+			{
+				this.LevelDefinition()[i]()[j] = level[i][j];
+
+				if (level[i][j][0] > RegionBuilder.NextId) // get the next uid
+					RegionBuilder.NextId = level[i][j][0];
+				
+			}
+		}
+		
+		// move to next...
+		RegionBuilder.NextId++;
+		
+		this.LevelDefinition()[0].valueHasMutated();
+		this.LevelDefinition()[1].valueHasMutated();
+		this.LevelDefinition()[2].valueHasMutated();
+		this.LevelDefinition()[3].valueHasMutated();		
+	},
+	StartLevel: function() {
+		
+		var self = this;
+		createjs.Ticker.useRAF = true;
+		createjs.Ticker.setFPS(30);
+		createjs.Ticker.addListener(self);
+		
+		this.Stage.update();
+		
+	},
+	tick: function() { // by convention (Ticker)- do not rename!
+
+		this.Update();
+
+	},
+	Update: function() {	
+		var dirty = false;
+		
+		// do we need to scroll?
+		if (this.Stage.mouseInBounds && this.ScrollManager.Update())
+			dirty = true;
+		
+		if (this.RegionBuilder !== undefined) // drawing underway!
+		{
+			this.RegionBuilder.UpdateShapePreview();
+			dirty = true;
+		}
+		var coords = this.Stage.localToLocal(this.Stage.mouseX,this.Stage.mouseY, this.LevelContainer);
+		$("#rawmousex").text(coords.x);
+		$("#rawmousey").text(coords.y);
+		
+		coords = this.GetProcessedMouse();
+		$("#mousex").text(coords.x);
+		$("#mousey").text(coords.y);
+
+		if (dirty)
+			this.Stage.update();
+	},
+	GetProcessedMouse: function() {
+		var coords = this.Stage.localToLocal(this.Stage.mouseX,this.Stage.mouseY, this.LevelContainer);
+		
+		// are we in the edge zone?
+		if (coords.y <= this.EdgeTolence)
+			coords.y = 0;
+		else if (coords.y >= this.LevelBase.image.height - this.EdgeTolence)
+			coords.y = this.LevelBase.image.height;
+			
+		if (coords.x <= this.EdgeTolence)
+			coords.x = 0;
+		else if (coords.x >= this.LevelBase.image.width - this.EdgeTolence)
+			coords.x = this.LevelBase.image.width;
+			
+		return coords;
+	},
+	SelectRegion: function(type, index) {
+		console.log(type + ' ' + index);
+		
+		this.SelectedArea = {type: type, index: index};
+		this.DebugRegionRenderer.HighlightedArea = this.SelectedArea;
+		
+		if (!typeof(type) == "undefined" && !typeof(index) == "undefined")
+		{		
+			var selected_area = this.LevelDefinition()[type]()[index][1];
+			
+			// find the areas bounding box
+			var top = this.LevelBase.image.height, 
+				left = this.LevelBase.image.width,
+				bottom = 0,
+				right = 0;
+			
+			for(var i = 1; i < selected_area.length; i++)
+			{
+				if (selected_area[i][0] < left)
+					left = selected_area[i][0];
+				
+				if (selected_area[i][0] > right)
+					right = selected_area[i][0];
+					
+				if (selected_area[i][1] < top)
+					top = selected_area[i][1];
+					
+				if (selected_area[i][1] > bottom)
+					bottom = selected_area[i][1];	
+			}
+			
+			// scroll to the area
+			this.LevelContainer.x = -left;
+			this.LevelContainer.y = -top;
+		}
+	},
+	SetHelpPrompt: function(s, warn)
+	{
+		var colour = warn ? '#fff' : '#000';
+		var bgcolour = warn ? '#f00' :'#fff';
+		if (s.length === 0)
+			s = 'Idle';
+				
+		$("#status").text(s).css({ 
+			'color' : colour, 
+			'background-color': bgcolour 
+		});
+
+	},
+	SetEditorMode: function (m) 
+	{
+		this.Mode = m;
+		
+		this.SelectRegion(undefined, undefined);
+		
+		this.DebugRegionRenderer.RefreshOnScreenRegions(this.Mode);
+		
+		this.SetHelpPrompt('Click on the map to begin defining a new region.');
+	},
+	SetEntity: function(e) 
+	{
+		this.EntityType = e;
+	},
+	GetParameterByName: function(name)
+	{
+	  name = name.replace(/[\[]/, "\\\[").replace(/[\]]/, "\\\]");
+	  var regexS = "[\\?&]" + name + "=([^&#]*)";
+	  var regex = new RegExp(regexS);
+	  var results = regex.exec(window.location.search);
+	  if(results == null)
+		return "";
+	  else
+		return decodeURIComponent(results[1].replace(/\+/g, " "));
+	}
+};
+
+var instance = new Editor();
+instance.Init();
+		</script>
+	</body>
+</html>
